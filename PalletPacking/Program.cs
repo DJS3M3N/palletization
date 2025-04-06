@@ -7,39 +7,41 @@ using System.Linq;
 
 class Box
 {
-    public string SKU;
+    public string SKU { get; set; } = string.Empty;
     public int Quantity;
-    public int Length, Width, Height, Weight;
+    public int Length, Width, Height;
+    public int Weight;
+
     public int X, Y, Z;
     public bool Rotated;
+
+    public long Volume => (long)Length * Width * Height;
 
     public Box CloneWithRotation()
     {
         return new Box
         {
-            SKU = this.SKU,
+            SKU = SKU,
             Quantity = 1,
-            Length = this.Width,
-            Width = this.Length,
-            Height = this.Height,
-            Weight = this.Weight,
-            Rotated = !this.Rotated
+            Length = Width,
+            Width = Length,
+            Height = Height,
+            Weight = Weight,
+            Rotated = !Rotated
         };
     }
-
-    public int Volume => Length * Width * Height;
 
     public Box CloneSingle()
     {
         return new Box
         {
-            SKU = this.SKU,
+            SKU = SKU,
             Quantity = 1,
-            Length = this.Length,
-            Width = this.Width,
-            Height = this.Height,
-            Weight = this.Weight,
-            Rotated = this.Rotated
+            Length = Length,
+            Width = Width,
+            Height = Height,
+            Weight = Weight,
+            Rotated = Rotated
         };
     }
 }
@@ -49,163 +51,299 @@ class Program
     const int PalletLength = 1200;
     const int PalletWidth = 1000;
 
+    const string InputFolder = "data";
+    const string OutputFolder = "results";
+
     static void Main(string[] args)
     {
-        if (args.Length < 3)
+        if (args.Length < 1)
         {
-            Console.WriteLine("Usage: dotnet run -- <input.csv> <output.csv> <clarityFactor>");
+            Console.WriteLine("Usage: dotnet run <clarityFactor>");
+            return;
+        }
+        if (!int.TryParse(args[0], out int clarityFactor) || clarityFactor < 1)
+        {
+            Console.WriteLine("clarityFactor must be positive.");
             return;
         }
 
-        string inputCsv = args[0];
-        string outputCsv = args[1];
-        if (!int.TryParse(args[2], out int clarityFactor) || clarityFactor < 1)
+        Directory.CreateDirectory(InputFolder);
+        Directory.CreateDirectory(OutputFolder);
+
+        var csvFiles = Directory.GetFiles(InputFolder, "*.csv");
+        if (csvFiles.Length == 0)
         {
-            Console.WriteLine("clarityFactor must be a positive integer.");
+            Console.WriteLine("No .csv files found in 'data' folder.");
             return;
         }
 
-        Pack(inputCsv, outputCsv, clarityFactor);
+        var globalSw = Stopwatch.StartNew();
+        double totalTime = 0.0;
+        double sumFillRates = 0.0;
+        double minFill = double.MaxValue;
+        double maxFill = double.MinValue;
+        int countPallets = 0;
+
+        foreach (var csvPath in csvFiles)
+        {
+            var name = Path.GetFileNameWithoutExtension(csvPath);
+            var outCsv = Path.Combine(OutputFolder, name + "_result.csv");
+
+            var (fillRate, timeSec) = Pack(csvPath, outCsv, clarityFactor);
+
+            totalTime += timeSec;
+            sumFillRates += fillRate;
+            if (fillRate < minFill) minFill = fillRate;
+            if (fillRate > maxFill) maxFill = fillRate;
+
+            countPallets++;
+            Console.WriteLine(
+                $"File {name}.csv processed. " +
+                $"FillRate={fillRate.ToString("F2", CultureInfo.InvariantCulture)}%, " +
+                $"Time={timeSec.ToString("F3", CultureInfo.InvariantCulture)} sec."
+            );
+        }
+
+        globalSw.Stop();
+        double overallTime = globalSw.Elapsed.TotalSeconds;
+        double avgTime = totalTime / countPallets;
+        double avgFill = sumFillRates / countPallets;
+
+        using (var writer = new StreamWriter("summary.csv"))
+        {
+            writer.WriteLine("Total processing time (sec),Average time (sec),Min fillRate (%),Max fillRate (%),Average fillRate (%)");
+            writer.WriteLine(
+                $"{overallTime.ToString("F3", CultureInfo.InvariantCulture)}," +
+                $"{avgTime.ToString("F3", CultureInfo.InvariantCulture)}," +
+                $"{minFill.ToString("F2", CultureInfo.InvariantCulture)}," +
+                $"{maxFill.ToString("F2", CultureInfo.InvariantCulture)}," +
+                $"{avgFill.ToString("F2", CultureInfo.InvariantCulture)}"
+            );
+        }
+
+        Console.WriteLine("----------");
+        Console.WriteLine("Summary written to summary.csv");
+        Console.WriteLine($"Pallets processed: {countPallets}");
+        Console.WriteLine($"Average fill rate: {avgFill.ToString("F2", CultureInfo.InvariantCulture)}%");
     }
 
-    static void Pack(string inputCsv, string outputCsv, int clarityFactor)
+    static (double fillRate, double time) Pack(string inputCsv, string outCsv, int clarityFactor)
     {
-        var stopwatch = Stopwatch.StartNew();
-        var boxes = ReadBoxes(inputCsv, clarityFactor);
-        var placedBoxes = new List<Box>();
+        var sw = Stopwatch.StartNew();
 
-        var boxesToPlace = new List<Box>();
-        foreach (var box in boxes)
-        {
-            for (int i = 0; i < box.Quantity; i++)
-            {
-                boxesToPlace.Add(box.CloneSingle());
-            }
-        }
+        var inputBoxes = ReadBoxes(inputCsv, clarityFactor);
 
-        boxesToPlace = boxesToPlace
-            .OrderByDescending(b => b.Height)
-            .ThenByDescending(b => b.Volume)
+        var boxes = inputBoxes
+            .Where(b => b.Length <= PalletLength && b.Width <= PalletWidth)
             .ToList();
 
-        var availablePlatforms = new List<(int x, int y, int z, int availLength, int availWidth)>
+        var expanded = new List<Box>();
+        foreach (var b in boxes)
         {
-            (0, 0, 0, PalletLength, PalletWidth)
-        };
+            for (int i = 0; i < b.Quantity; i++)
+                expanded.Add(b.CloneSingle());
+        }
 
-        for (int j = 0; j < boxesToPlace.Count; j++)
+        expanded = expanded
+            .OrderByDescending(b => b.Volume)
+            .ThenByDescending(b => b.Weight)
+            .ToList();
+
+        var placedBoxes = new List<Box>();
+        int currentZ = 0;
+        int layerIndex = 0;
+
+        var unplaced = new List<Box>(expanded);
+
+        while (unplaced.Count > 0)
         {
-            var box = boxesToPlace[j];
-            bool placed = false;
+            layerIndex++;
+            var anchor = unplaced[0];
+            unplaced.RemoveAt(0);
 
-            var variants = new[] { box, box.CloneWithRotation() };
+            int offsetXY = layerIndex * 10;
 
-            for (int i = 0; i < availablePlatforms.Count && !placed; i++)
+            anchor.X = offsetXY;
+            anchor.Y = offsetXY;
+            anchor.Z = currentZ;
+            placedBoxes.Add(anchor);
+
+            var freeRects = new List<(int x, int y, int w, int h)>
             {
-                var platform = availablePlatforms[i];
+                (
+                    anchor.X + anchor.Length,
+                    offsetXY,
+                    PalletLength - anchor.Length - offsetXY,
+                    anchor.Width
+                ),
+                (
+                    offsetXY,
+                    anchor.Y + anchor.Width,
+                    PalletLength - offsetXY,
+                    PalletWidth - (anchor.Y + anchor.Width)
+                )
+            };
 
-                foreach (var variant in variants)
+            PlaceBoxesInLayer(unplaced, placedBoxes, freeRects, currentZ);
+
+            int layerHeight = placedBoxes
+                .Where(bx => bx.Z == currentZ)
+                .Select(bx => bx.Height)
+                .DefaultIfEmpty(0)
+                .Max();
+
+            if (layerHeight == 0)
+            {
+                layerHeight = anchor.Height;
+            }
+
+            currentZ += layerHeight;
+        }
+
+        sw.Stop();
+
+        long usedVolume = placedBoxes.Sum(b => b.Volume);
+        long maxZ = placedBoxes.Count > 0
+            ? placedBoxes.Max(b => (long)b.Z + b.Height)
+            : 0;
+
+        long palletVolume = PalletLength * (long)PalletWidth * maxZ;
+        double fillRate = 0.0;
+        if (palletVolume > 0)
+        {
+            fillRate = usedVolume / (double)palletVolume * 100.0;
+        }
+
+        WriteOutput(outCsv, placedBoxes, sw.Elapsed.TotalSeconds, fillRate);
+
+        return (fillRate, sw.Elapsed.TotalSeconds);
+    }
+
+    static void PlaceBoxesInLayer(
+        List<Box> unplaced,
+        List<Box> placedBoxes,
+        List<(int x, int y, int w, int h)> freeRects,
+        int currentZ)
+    {
+        bool boxPlacedInThisIteration;
+        do
+        {
+            boxPlacedInThisIteration = false;
+
+            for (int i = 0; i < unplaced.Count; i++)
+            {
+                var candidate = unplaced[i];
+
+                var variants = new[]
                 {
-                    if (variant.Length <= platform.availLength &&
-                        variant.Width <= platform.availWidth)
+                    (L: candidate.Length, W: candidate.Width, R: candidate.Rotated),
+                    (L: candidate.Width,  W: candidate.Length, R: !candidate.Rotated)
+                };
+
+                bool placedOk = false;
+
+                foreach (var v in variants)
+                {
+                    for (int frIdx = 0; frIdx < freeRects.Count; frIdx++)
                     {
-                        variant.X = platform.x;
-                        variant.Y = platform.y;
-                        variant.Z = platform.z;
-                        placedBoxes.Add(variant);
-                        placed = true;
+                        var fr = freeRects[frIdx];
 
-                        availablePlatforms.RemoveAt(i);
-
-                        if (platform.availLength - variant.Length > 0)
+                        if (v.L <= fr.w && v.W <= fr.h)
                         {
-                            availablePlatforms.Add((
-                                platform.x + variant.Length,
-                                platform.y,
-                                platform.z,
-                                platform.availLength - variant.Length,
-                                variant.Width));
+                            candidate.X = fr.x;
+                            candidate.Y = fr.y;
+                            candidate.Z = currentZ;
+                            candidate.Length = v.L;
+                            candidate.Width = v.W;
+                            candidate.Rotated = v.R;
+
+                            placedBoxes.Add(candidate);
+                            unplaced.RemoveAt(i);
+
+                            int leftoverRightW = fr.w - v.L;
+                            int leftoverTopH = fr.h - v.W;
+
+                            if (leftoverRightW > 0)
+                            {
+                                freeRects.Add((
+                                    fr.x + v.L,
+                                    fr.y,
+                                    leftoverRightW,
+                                    fr.h
+                                ));
+                            }
+
+                            if (leftoverTopH > 0)
+                            {
+                                freeRects.Add((
+                                    fr.x,
+                                    fr.y + v.W,
+                                    v.L,
+                                    leftoverTopH
+                                ));
+                            }
+
+                            freeRects.RemoveAt(frIdx);
+
+                            placedOk = true;
+                            boxPlacedInThisIteration = true;
+                            break;
                         }
-
-                        if (platform.availWidth - variant.Width > 0)
-                        {
-                            availablePlatforms.Add((
-                                platform.x,
-                                platform.y + variant.Width,
-                                platform.z,
-                                platform.availLength,
-                                platform.availWidth - variant.Width));
-                        }
-
-                        availablePlatforms.Add((
-                            platform.x,
-                            platform.y,
-                            platform.z + variant.Height,
-                            variant.Length,
-                            variant.Width));
-
-                        availablePlatforms = availablePlatforms
-                            .OrderBy(p => p.z)
-                            .ThenBy(p => p.y)
-                            .ThenBy(p => p.x)
-                            .ToList();
-
-                        break;
                     }
+
+                    if (placedOk)
+                        break;
+                }
+
+                if (placedOk)
+                {
+                    i--;
                 }
             }
 
-            if (!placed)
-            {
-                // Если не удалось разместить коробку, пробуем создать новую платформу сверху
-                int z = placedBoxes.Max(b => b.Z + b.Height);
-                availablePlatforms.Add((0, 0, z, PalletLength, PalletWidth));
-
-                // Повторяем попытку размещения
-                j--;
-                continue;
-            }
-        }
-
-        stopwatch.Stop();
-        double usedVolume = placedBoxes.Sum(b => b.Volume);
-        int maxZ = placedBoxes.Max(b => b.Z + b.Height);
-        double palletVolume = PalletLength * PalletWidth * maxZ;
-        double fillRate = usedVolume / palletVolume * 100;
-        Console.WriteLine($"UsedVolume: {usedVolume} mm³");
-        Console.WriteLine($"PalletVolume: {palletVolume} mm³");
-        Console.WriteLine($"FillRate: {fillRate:F2}%");
-        Console.WriteLine($"Total boxes placed: {placedBoxes.Count}");
-        WriteOutput(outputCsv, placedBoxes, stopwatch.Elapsed.TotalSeconds, fillRate);
+        } while (boxPlacedInThisIteration);
     }
 
-    static List<Box> ReadBoxes(string path, int clarity)
+    static List<Box> ReadBoxes(string path, int clarityFactor)
     {
-        var boxes = new List<Box>();
-        var lines = File.ReadAllLines(path);
+        var result = new List<Box>();
+        if (!File.Exists(path)) return result;
 
+        var lines = File.ReadAllLines(path);
         foreach (var line in lines.Skip(1))
         {
-            if (string.IsNullOrWhiteSpace(line)) continue;
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
 
             var parts = line.Split(',');
+            if (parts.Length < 6)
+                continue;
 
-            if (parts[0] == "SKU" || parts.Length < 6) continue;
+            var sku = parts[0];
+            if (!int.TryParse(parts[1], out int qty)) continue;
+            if (!double.TryParse(parts[2], NumberStyles.Any, CultureInfo.InvariantCulture, out double length)) continue;
+            if (!double.TryParse(parts[3], NumberStyles.Any, CultureInfo.InvariantCulture, out double width)) continue;
+            if (!double.TryParse(parts[4], NumberStyles.Any, CultureInfo.InvariantCulture, out double height)) continue;
+            if (!int.TryParse(parts[5], out int weight)) continue;
 
-            var box = new Box
+            int L = RoundToFactor(length, clarityFactor);
+            int W = RoundToFactor(width, clarityFactor);
+            int H = RoundToFactor(height, clarityFactor);
+
+            if (qty <= 0 || L <= 0 || W <= 0 || H <= 0)
+                continue;
+
+            result.Add(new Box
             {
-                SKU = parts[0],
-                Quantity = int.Parse(parts[1]),
-                Length = RoundToFactor(double.Parse(parts[2], CultureInfo.InvariantCulture), clarity),
-                Width = RoundToFactor(double.Parse(parts[3], CultureInfo.InvariantCulture), clarity),
-                Height = RoundToFactor(double.Parse(parts[4], CultureInfo.InvariantCulture), clarity),
-                Weight = int.Parse(parts[5])
-            };
-
-            boxes.Add(box);
+                SKU = sku,
+                Quantity = qty,
+                Length = L,
+                Width = W,
+                Height = H,
+                Weight = weight
+            });
         }
-
-        return boxes;
+        return result;
     }
 
     static int RoundToFactor(double value, int factor)
@@ -213,18 +351,27 @@ class Program
         return (int)(Math.Ceiling(value / factor) * factor);
     }
 
-    static void WriteOutput(string path, List<Box> boxes, double time, double fillRate)
+    static void WriteOutput(string path, List<Box> placed, double timeSec, double fillRate)
     {
-        using var writer = new StreamWriter(path);
-        writer.WriteLine("SKU,X,Y,Z,Length,Width,Height,Rotated");
+        using var wr = new StreamWriter(path);
+        wr.WriteLine("SKU,X,Y,Z,Length,Width,Height,Rotated");
 
-        foreach (var box in boxes)
+        foreach (var b in placed)
         {
-            writer.WriteLine($"{box.SKU},{box.X},{box.Y},{box.Z},{box.Length},{box.Width},{box.Height},{box.Rotated}");
+            wr.WriteLine(
+                $"{b.SKU}," +
+                $"{b.X}," +
+                $"{b.Y}," +
+                $"{b.Z}," +
+                $"{b.Length}," +
+                $"{b.Width}," +
+                $"{b.Height}," +
+                $"{b.Rotated}"
+            );
         }
 
-        writer.WriteLine();
-        writer.WriteLine($"ExecutionTime,{time:F3} seconds");
-        writer.WriteLine($"FillRate,{fillRate:F2}%");
+        wr.WriteLine();
+        wr.WriteLine($"ExecutionTime,{timeSec.ToString("F3", CultureInfo.InvariantCulture)} seconds");
+        wr.WriteLine($"FillRate,{fillRate.ToString("F2", CultureInfo.InvariantCulture)}%");
     }
 }
