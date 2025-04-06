@@ -1,0 +1,14 @@
+C:\Users\spiry\Desktop\HSE\Diploma\PalletPacking\obj\Debug\net9.0\PalletPacking.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\spiry\Desktop\HSE\Diploma\PalletPacking\obj\Debug\net9.0\PalletPacking.AssemblyInfoInputs.cache
+C:\Users\spiry\Desktop\HSE\Diploma\PalletPacking\obj\Debug\net9.0\PalletPacking.AssemblyInfo.cs
+C:\Users\spiry\Desktop\HSE\Diploma\PalletPacking\obj\Debug\net9.0\PalletPacking.csproj.CoreCompileInputs.cache
+C:\Users\spiry\Desktop\HSE\Diploma\PalletPacking\bin\Debug\net9.0\PalletPacking.exe
+C:\Users\spiry\Desktop\HSE\Diploma\PalletPacking\bin\Debug\net9.0\PalletPacking.deps.json
+C:\Users\spiry\Desktop\HSE\Diploma\PalletPacking\bin\Debug\net9.0\PalletPacking.runtimeconfig.json
+C:\Users\spiry\Desktop\HSE\Diploma\PalletPacking\bin\Debug\net9.0\PalletPacking.dll
+C:\Users\spiry\Desktop\HSE\Diploma\PalletPacking\bin\Debug\net9.0\PalletPacking.pdb
+C:\Users\spiry\Desktop\HSE\Diploma\PalletPacking\obj\Debug\net9.0\PalletPacking.dll
+C:\Users\spiry\Desktop\HSE\Diploma\PalletPacking\obj\Debug\net9.0\refint\PalletPacking.dll
+C:\Users\spiry\Desktop\HSE\Diploma\PalletPacking\obj\Debug\net9.0\PalletPacking.pdb
+C:\Users\spiry\Desktop\HSE\Diploma\PalletPacking\obj\Debug\net9.0\PalletPacking.genruntimeconfig.cache
+C:\Users\spiry\Desktop\HSE\Diploma\PalletPacking\obj\Debug\net9.0\ref\PalletPacking.dll
