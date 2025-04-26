@@ -1,2 +1,2 @@
-Total processing time (sec),Average time (sec),Min fillRate (%),Max fillRate (%),Average fillRate (%)
-0.997,0.001,24.17,67.98,54.25
+TotalTime,AvgTime,MinFill,MaxFill,AvgFill
+4.031,0.008,54.22,85.82,72.34
