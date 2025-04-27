@@ -9,216 +9,196 @@ class Rect { public int X, Y, W, H; public Rect(int x, int y, int w, int h) { X 
 
 class Box
 {
-    public string SKU = ""; public int Quantity, Length, Width, Height, Weight;
-    public int X, Y, Z; public bool Rotated;
+    public string SKU = "";
+    public int Quantity, Length, Width, Height, Weight;
+    public int X, Y, Z; public bool Rotated; public int PalletId;
     public long Volume => (long)Length * Width * Height;
     public Box CloneSingle() => (Box)MemberwiseClone();
 }
 
+class Pallet
+{
+    public int Id; public int CurrentZ; public List<Box> Placed = new();
+    public Pallet(int id) => Id = id;
+    public string Address =>
+        (Id % 3 == 0 && Id % 2 != 0) ? "A" : (Id % 2 == 0 && Id % 3 != 0) ? "B" : "C";
+    public double FillRate => CurrentZ == 0 ? 0 :
+        Placed.Sum(b => (double)b.Volume) / ((double)Program.PL * Program.PW * CurrentZ) * 100.0;
+}
+
 class Program
 {
-    const int PL = 1200, PW = 1000;
+    public const int PL = 1200, PW = 1000;
     const string IN = "data", OUT = "results";
-    const int MAX_CAND = 15;
     static void Main(string[] a)
     {
         if (a.Length == 0 || !int.TryParse(a[0], out int cf) || cf <= 0)
-        { Console.WriteLine("Usage: dotnet run <clarityFactor>"); return; }
+        {
+            Console.WriteLine("Usage: dotnet run <clarityFactor>"); return;
+        }
         cf = Math.Min(cf, Math.Min(PL, PW));
-
         Directory.CreateDirectory(IN); Directory.CreateDirectory(OUT);
+
         var files = Directory.GetFiles(IN, "*.csv");
         if (files.Length == 0) { Console.WriteLine("Нет CSV-файлов в папке data"); return; }
 
-        double sum = 0, min = double.MaxValue, max = 0, sumT = 0;
+        var groups = files.Select(f => new
+        {
+            Id = int.Parse(Path.GetFileNameWithoutExtension(f)),
+            File = f
+        })
+                        .GroupBy(x => AddrOf(x.Id))
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
+        double sFill = 0, min = double.MaxValue, max = 0, sTime = 0;
         var gSw = Stopwatch.StartNew();
 
-        foreach (var f in files)
+        foreach (var (addr, fileList) in groups)
         {
-            var res = Path.Combine(OUT, $"{Path.GetFileNameWithoutExtension(f)}_result.csv");
-            var (fill, t) = PackFile(f, res, cf);
-            Console.WriteLine($"{Path.GetFileName(f)}: {fill:F2}%  ({t:F3}s)");
-            sum += fill; min = Math.Min(min, fill); max = Math.Max(max, fill); sumT += t;
+            var sw = Stopwatch.StartNew();
+            var boxes = fileList.SelectMany(f => Read(f.File, cf)
+                                    .SelectMany(b => Enumerable.Range(0, b.Quantity)
+                                                             .Select(_ => b.CloneSingle())))
+                              .OrderByDescending(b => b.Volume)
+                              .ToList();
+            var pallets = fileList.Select(f => new Pallet(f.Id)).ToList();
+            PackAcrossPallets(boxes, pallets);
+
+            foreach (var p in pallets)
+                WritePallet(Path.Combine(OUT, $"pallet{p.Id:D3}_{p.Address}.csv"),
+                            p, sw.Elapsed.TotalSeconds);
+
+            double avg = pallets.Average(p => p.FillRate);
+            Console.WriteLine($"Address {addr}: {pallets.Count} pallets, avg fill {avg:F2}%");
+            sFill += avg; min = Math.Min(min, avg); max = Math.Max(max, avg); sTime += sw.Elapsed.TotalSeconds;
         }
+
         gSw.Stop();
-        File.WriteAllText("summary.csv", string.Format(CultureInfo.InvariantCulture,
-            "TotalTime,AvgTime,MinFill,MaxFill,AvgFill\n{0:F3},{1:F3},{2:F2},{3:F2},{4:F2}",
-            gSw.Elapsed.TotalSeconds, sumT / files.Length, min, max, sum / files.Length));
-        Console.WriteLine($"Summary: AvgFill = {sum / files.Length:F2}%  (min {min:F2}, max {max:F2})");
+        File.WriteAllText("summary.csv",
+            string.Format(CultureInfo.InvariantCulture,
+                "TotalTime,AvgTime,MinFill,MaxFill,AvgFill\n{0:F3},{1:F3},{2:F2},{3:F2},{4:F2}",
+                gSw.Elapsed.TotalSeconds, sTime / groups.Count, min, max, sFill / groups.Count));
+        Console.WriteLine($"Summary AvgFill={sFill / groups.Count:F2}% (min {min:F2}, max {max:F2})");
     }
 
-    static (double fill, double time) PackFile(string csvIn, string csvOut, int cf)
+    record Layer(List<Box> Boxes, int H);
+    static void PackAcrossPallets(List<Box> boxes, List<Pallet> pallets)
     {
-        var sw = Stopwatch.StartNew();
-
-        var unplaced = Read(csvIn, cf)
-                       .SelectMany(b => Enumerable.Range(0, b.Quantity).Select(_ => b.CloneSingle()))
-                       .OrderByDescending(b => b.Volume)
-                       .ToList();
-
-        var placed = new List<Box>();
-        int z = 0;
-
-        while (unplaced.Count > 0)
+        var layers = BuildLayers(boxes);
+        foreach (var layer in layers)
         {
-            var candHeights = unplaced.Select(b => b.Height)
-                                      .Distinct().OrderBy(h => h)
-                                      .Take(MAX_CAND).ToList();
-            double bestVF = -1; int bestH = candHeights[0];
-
-            foreach (int h in candHeights)
-            {
-                SimulateLayer(unplaced, h, out double vf);
-                if (vf > bestVF) { bestVF = vf; bestH = h; }
-            }
-
-            var layerBoxes = unplaced.Where(b => b.Height <= bestH).ToList();
-            if (layerBoxes.Count == 0)
-            {
-                bestH = unplaced.Max(b => b.Height);
-                layerBoxes = unplaced.Where(b => b.Height == bestH).ToList();
-            }
-
-            var free = new List<Rect> { new Rect(0, 0, PL, PW) };
-            var layerPlaced = new List<Box>();
-
-            while (true)
-            {
-                var c = FindBest(layerBoxes, free, layerPlaced);
-                if (c.iBox < 0) break;
-                Place(layerBoxes, layerPlaced, free, c, z);
-            }
-
-            if (layerPlaced.Count == 0) break;
-
-            foreach (var b in layerPlaced) unplaced.Remove(b);
-            placed.AddRange(layerPlaced);
-            z += bestH;
+            var tgt = pallets.OrderBy(p => p.CurrentZ).First();
+            foreach (var b in layer.Boxes) { b.Z = tgt.CurrentZ; b.PalletId = tgt.Id; tgt.Placed.Add(b); }
+            tgt.CurrentZ += layer.H;
         }
-
-        sw.Stop();
-        double used = placed.Sum(b => (double)b.Volume),
-               full = (double)PL * PW * z,
-               fill = full > 0 ? used / full * 100 : 0;
-        Write(csvOut, placed, sw.Elapsed.TotalSeconds, fill);
-        return (fill, sw.Elapsed.TotalSeconds);
     }
 
-    static void SimulateLayer(List<Box> source, int maxH, out double volumeFill)
+    static List<Layer> BuildLayers(List<Box> boxes)
     {
-        var boxes = source.Where(b => b.Height <= maxH)
-                          .Select(b => b.CloneSingle()).ToList();
-        var free = new List<Rect> { new Rect(0, 0, PL, PW) };
-        double usedVol = 0;
-
-        while (true)
+        var layers = new List<Layer>(); var rest = boxes.ToList();
+        while (rest.Count > 0)
         {
-            var c = FindBest(boxes, free, null);
-            if (c.iBox < 0) break;
-            var b = boxes[c.iBox]; usedVol += b.Volume;
-            var r = free[c.iRect]; free.RemoveAt(c.iRect);
-            int right = r.W - c.W, top = r.H - c.H;
-            void Add(int x, int y, int w, int h) { if (w > 0 && h > 0) free.Add(new Rect(x, y, w, h)); }
-            Add(r.X + c.W, r.Y, right, c.H);
-            Add(r.X, r.Y + c.H, r.W, top);
-            boxes.RemoveAt(c.iBox);
-            for (int i = 0; i < free.Count; i++)
-                for (int j = i + 1; j < free.Count; j++)
-                {
-                    if (Contains(free[i], free[j])) free.RemoveAt(j--);
-                    else if (Contains(free[j], free[i])) { free.RemoveAt(i--); break; }
-                }
-        }
-        volumeFill = usedVol / (PL * PW * maxH);
-    }
+            var first = rest[0]; int h = first.Height;
+            var free = new List<Rect> { new Rect(0, 0, PL, PW) }; var cur = new List<Box>();
+            Place(first, free, cur, 0, 0);
+            rest.RemoveAt(0);
 
-    struct Cand { public int iBox, iRect, W, H; public bool Rot; public int Waste, Contact; }
-
-    static Cand FindBest(List<Box> boxes, List<Rect> free, List<Box>? curLayer)
-    {
-        Cand best = new() { iBox = -1 }; var layer = curLayer ?? new();   // при симуляции curLayer=null
-        for (int i = 0; i < boxes.Count; i++)
-        {
-            var b = boxes[i];
-            foreach (var v in new[] { (b.Length, b.Width, false), (b.Width, b.Length, true) })
+            for (int i = 0; i < rest.Count; i++)
             {
-                int bw = v.Item1, bh = v.Item2; if (bw > PL || bh > PW) continue;
-                for (int j = 0; j < free.Count; j++)
+                var b = rest[i]; if (b.Height > h) continue;
+                if (TryFit(b, free, out int x, out int y, out bool rot))
                 {
-                    var r = free[j]; if (bw > r.W || bh > r.H) continue;
-                    int waste = r.W * r.H - bw * bh, contact = 0;
-                    if (r.X == 0) contact += bh; if (r.Y == 0) contact += bw;
-                    if (r.X + bw == PL) contact += bh; if (r.Y + bh == PW) contact += bw;
-                    foreach (var p in layer)
-                    {
-                        if (r.Y == p.Y + p.Width || r.Y + bh == p.Y)
-                            contact += Overlap(r.X, r.X + bw, p.X, p.X + p.Length);
-                        if (r.X == p.X + p.Length || r.X + bw == p.X)
-                            contact += Overlap(r.Y, r.Y + bh, p.Y, p.Y + p.Width);
-                    }
-                    bool better = best.iBox < 0 || waste < best.Waste ||
-                                   (waste == best.Waste && contact > best.Contact);
-                    if (better) best = new Cand
-                    {
-                        iBox = i,
-                        iRect = j,
-                        W = bw,
-                        H = bh,
-                        Rot = v.Item3,
-                        Waste = waste,
-                        Contact = contact
-                    };
+                    Place(b, free, cur, x, y, rot); rest.RemoveAt(i--);
                 }
             }
+            layers.Add(new Layer(cur, h));
         }
-        return best;
+        return layers;
     }
-    static int Overlap(int a1, int a2, int b1, int b2) => Math.Max(0, Math.Min(a2, b2) - Math.Max(a1, b1));
 
-    static void Place(List<Box> src, List<Box> pl, List<Rect> free, Cand c, int z)
+    static bool TryFit(Box b, List<Rect> free, out int x, out int y, out bool rot)
     {
-        var b = src[c.iBox]; var r = free[c.iRect];
-        b.Length = c.W; b.Width = c.H; b.Rotated = c.Rot; b.X = r.X; b.Y = r.Y; b.Z = z;
-        pl.Add(b); src.RemoveAt(c.iBox); free.RemoveAt(c.iRect);
-        int right = r.W - c.W, top = r.H - c.H;
-        void Add(int x, int y, int w, int h) { if (w > 0 && h > 0) free.Add(new Rect(x, y, w, h)); }
-        Add(r.X + c.W, r.Y, right, c.H); Add(r.X, r.Y + c.H, r.W, top);
-        for (int i = 0; i < free.Count; i++)
-            for (int j = i + 1; j < free.Count; j++)
-            {
-                if (Contains(free[i], free[j])) free.RemoveAt(j--);
-                else if (Contains(free[j], free[i])) { free.RemoveAt(i--); break; }
-            }
+        rot = false; x = y = 0;
+        foreach (var v in new[] { (b.Length, b.Width, false), (b.Width, b.Length, true) })
+        {
+            int w = v.Item1, h = v.Item2;
+            foreach (var r in free) if (w <= r.W && h <= r.H) { x = r.X; y = r.Y; rot = v.Item3; return true; }
+        }
+        return false;
     }
+
+    static void Place(Box b, List<Rect> free, List<Box> cur, int x, int y, bool rot = false)
+    {
+        if (rot) { (b.Length, b.Width) = (b.Width, b.Length); b.Rotated = true; }
+        b.X = x; b.Y = y; cur.Add(b);
+
+        var newFree = new List<Rect>();
+        foreach (var r in free)
+        {
+            if (!Intersects(b, r)) { newFree.Add(r); continue; }
+            if (r.X < b.X) newFree.Add(new Rect(r.X, r.Y, b.X - r.X, r.H));
+            int bx2 = b.X + b.Length;
+            if (r.X + r.W > bx2) newFree.Add(new Rect(bx2, r.Y, r.X + r.W - bx2, r.H));
+            if (r.Y < b.Y) newFree.Add(new Rect(Math.Max(r.X, b.X), r.Y,
+                                             Math.Min(bx2, r.X + r.W) - Math.Max(r.X, b.X),
+                                             b.Y - r.Y));
+            int by2 = b.Y + b.Width;
+            if (r.Y + r.H > by2) newFree.Add(new Rect(Math.Max(r.X, b.X), by2,
+                                                 Math.Min(bx2, r.X + r.W) - Math.Max(r.X, b.X),
+                                                 r.Y + r.H - by2));
+        }
+        newFree.RemoveAll(r => r.W == 0 || r.H == 0);
+        for (int i = 0; i < newFree.Count; i++)
+            for (int j = i + 1; j < newFree.Count; j++)
+                if (Contains(newFree[i], newFree[j])) newFree.RemoveAt(j--);
+                else if (Contains(newFree[j], newFree[i])) { newFree.RemoveAt(i--); break; }
+
+        free.Clear(); free.AddRange(newFree);
+    }
+
+    static bool Intersects(Box b, Rect r) =>
+        b.X < b.X + b.Length && r.X < r.X + r.W &&
+        b.X + b.Length > r.X && r.X + r.W > b.X &&
+        b.Y < b.Y + b.Width && r.Y < r.Y + r.H &&
+        b.Y + b.Width > r.Y && r.Y + r.H > b.Y;
+
     static bool Contains(Rect a, Rect b) =>
         b.X >= a.X && b.Y >= a.Y && b.X + b.W <= a.X + a.W && b.Y + b.H <= a.Y + a.H;
 
-    static IEnumerable<Box> Read(string p, int cf)
+    static string AddrOf(int id) => (id % 3 == 0 && id % 2 != 0) ? "A" : (id % 2 == 0 && id % 3 != 0) ? "B" : "C";
+
+    static IEnumerable<Box> Read(string path, int cf)
     {
-        foreach (var (l, i) in File.ReadLines(p).Select((l, idx) => (l, idx)))
+        foreach (var (line, i) in File.ReadLines(path).Select((l, idx) => (l, idx)))
         {
-            if (i == 0 || string.IsNullOrWhiteSpace(l)) continue;
-            var s = l.Split(','); if (s.Length < 6) continue;
+            if (i == 0 || string.IsNullOrWhiteSpace(line)) continue;
+            var s = line.Split(','); if (s.Length < 6) continue;
             if (!int.TryParse(s[1], out int q)) continue;
             if (!double.TryParse(s[2], NumberStyles.Any, CultureInfo.InvariantCulture, out var Ld)) continue;
             if (!double.TryParse(s[3], NumberStyles.Any, CultureInfo.InvariantCulture, out var Wd)) continue;
             if (!double.TryParse(s[4], NumberStyles.Any, CultureInfo.InvariantCulture, out var Hd)) continue;
             if (!int.TryParse(s[5], out int w)) continue;
+
             int L = (int)Math.Ceiling(Ld / cf) * cf,
                 W = (int)Math.Ceiling(Wd / cf) * cf,
                 H = (int)Math.Ceiling(Hd / cf) * cf;
             if (L <= 0 || W <= 0 || H <= 0 || q <= 0) continue;
+
             yield return new Box { SKU = s[0], Quantity = q, Length = L, Width = W, Height = H, Weight = w };
         }
     }
-    static void Write(string p, IEnumerable<Box> b, double t, double f)
+
+    static void WritePallet(string path, Pallet p, double t)
     {
-        using var w = new StreamWriter(p);
+        using var w = new StreamWriter(path);
         var iv = CultureInfo.InvariantCulture;
+        w.WriteLine($"PalletId,{p.Id}"); w.WriteLine($"Address,{p.Address}");
+        w.WriteLine($"ExecutionTime,{t.ToString("F3", iv)} seconds\n");
         w.WriteLine("SKU,X,Y,Z,Length,Width,Height,Rotated");
-        foreach (var x in b)
-            w.WriteLine($"{x.SKU},{x.X},{x.Y},{x.Z},{x.Length},{x.Width},{x.Height},{x.Rotated}");
-        w.WriteLine(); w.WriteLine($"ExecutionTime,{t.ToString("F3", iv)} seconds");
-        w.WriteLine($"FillRate,{f.ToString("F2", iv)}%");
+        foreach (var b in p.Placed)
+            w.WriteLine($"{b.SKU},{b.X},{b.Y},{b.Z},{b.Length},{b.Width},{b.Height},{b.Rotated}");
+        w.WriteLine($"\nFillRate,{p.FillRate.ToString("F2", iv)}%");
     }
 }
+
+static class LExt { public static T AddRet<T>(this List<T> l, T x) { l.Add(x); return x; } }

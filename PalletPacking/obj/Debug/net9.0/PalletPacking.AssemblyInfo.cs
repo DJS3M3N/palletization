@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("PalletPacking")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+734b2569be8e5690d9bd5414a03fb17e8150f13d")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+58e3836a72f648df086ebd2c5548dd4016832645")]
 [assembly: System.Reflection.AssemblyProductAttribute("PalletPacking")]
 [assembly: System.Reflection.AssemblyTitleAttribute("PalletPacking")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
